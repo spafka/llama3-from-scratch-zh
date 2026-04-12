@@ -342,7 +342,7 @@ if __name__ == "__main__":
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
     args_xxx = ModelArgs(
         dim=4096,
-        n_layers=2,
+        n_layers=32,
         n_heads=32,
         n_kv_heads=8,
         multiple_of=1024,
@@ -355,7 +355,7 @@ if __name__ == "__main__":
     model = Transformer(args_xxx).to(device)
     print("init")
     
-    checkpoint_path = "Meta-Llama-3-8B-Instruct-2layers/consolidated_2layers.pth"
+    checkpoint_path = "Meta-Llama-3-8B/consolidated.00.pth"
     checkpoint = torch.load(checkpoint_path, map_location=device)
     model.load_state_dict(checkpoint, strict=False)
     print("load success")
