@@ -2,6 +2,7 @@
 """
 
 import math
+import gc
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
@@ -43,12 +44,12 @@ class RMSNorm(torch.nn.Module):
         return output * self.weight
 
 def precompute_freqs_cis(dim: int, end: int, theta: float = 10000.0):
-    """ Precomputing the frequency tensor with complex exponentials 
+    """ Precomputing the frequency tensor with complex exponentials
         for the given sequence length and dimensions
     """
     freqs = 1.0 / (theta ** (torch.arange(0, dim, 2)[: (dim // 2)].float() / dim))
     t = torch.arange(end, device=freqs.device, dtype=torch.float32)
-    freqs = torch.outer(t, freqs).float() 
+    freqs = torch.outer(t, freqs).float()
     freqs_cos = torch.cos(freqs)
     freqs_sin = torch.sin(freqs)
     return freqs_cos, freqs_sin
@@ -340,6 +341,12 @@ def print_model_parameters(model):
 
 if __name__ == "__main__":
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    # 关键点：设置全局默认数据类型为 bfloat16
+    # 这样 Transformer(args_xxx) 创建的每个 Linear/Embedding 层直接就是 16 位精度
+    # 内存占用从 32GB 降低到 16GB，防止初始化阶段就 OOM
+    torch.set_default_dtype(torch.bfloat16)
+    
     args_xxx = ModelArgs(
         dim=4096,
         n_layers=32,
@@ -352,26 +359,41 @@ if __name__ == "__main__":
         rope_theta=50000.0
     )
     
-    model = Transformer(args_xxx).to(device)
-    print("init")
+    print("正在初始化模型结构 (直接以 bfloat16 创建)...")
+    model = Transformer(args_xxx)
     
-    checkpoint_path = "Meta-Llama-3-8B/consolidated.00.pth"
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint_path = "../Meta-Llama-3-8B/consolidated.00.pth"
+    print(f"正在从 {checkpoint_path} 加载权重 (mmap=True)...")
+    
+    # 使用 mmap=True 加载权重包，进一步降低内存压力
+    checkpoint = torch.load(checkpoint_path, map_location= device, mmap=True, weights_only=True)
+    
+    print("正在加载权重到模型...")
     model.load_state_dict(checkpoint, strict=False)
-    print("load success")
+    
+    del checkpoint
+    gc.collect()
+    
+    print(f"正在将模型搬运到设备: {device}...")
+    model.to(device)
+    
+    # 运行完毕后恢复默认类型（可选）
+    # torch.set_default_dtype(torch.float32)
 
+    # 这里的输入也要确保在对应的 device 上
     x = torch.tensor([[128000, 1820, 4320, 311, 279, 17139, 3488, 315, 2324, 11, 279, 15861, 11, 323, 4395, 374, 220]]).to(device)
-    print(x.shape)
-    logits = model(x)
-    print(logits.size())
+    print(f"输入张量形状: {x.shape}")
     
-    next_token = torch.argmax(logits[:, -1], dim=-1)
-    print(next_token)
-    # tensor([50210])
-    
-    next_token = model.generate(x, max_new_tokens=1, temperature=0)
-    print(next_token)
-    
-    # print_model_parameters(model)
+    # 推理时务必使用 inference_mode
+    with torch.inference_mode():
+        logits = model(x)
+        print(f"输出 Logits 形状: {logits.size()}")
+        
+        next_token = torch.argmax(logits[:, -1], dim=-1)
+        print(f"预测的下一个 Token ID: {next_token.item()}")
+        
+        print("开始生成测试 (max_new_tokens=10)...")
+        generated = model.generate(x, max_new_tokens=10, temperature=0.7)
+        print(f"生成序列: {generated.tolist()}")
     
     
